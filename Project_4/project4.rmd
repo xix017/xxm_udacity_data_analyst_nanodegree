@@ -1,0 +1,588 @@
+---
+output: pdf_document
+---
+### Project 4 : Explore and Summarize Data
+
+#### Xiaomin Xu
+
+#### Oct 15th, 2015
+
+=================================================================================================================
+
+###1. Introduction
+
+The datasets I used to do this project is *White Wine Quality*, which contains 4,898 white wines with 11 variables on quantifying the chemical properties of each wine. At least 3 wine experts rated the quality of each wine, providing a rating between 0 (very bad) and 10 (very excellent).
+
+This project amis to investigate:
+
+- Which chemical properties influence the quality of wines?
+
+###2. Univariate Plots Section 
+
+####2.1 Dataset Structure
+
+Variables descriptions provided by the course web are shown as below: 
+
+- input variables:
+
+   (1) fixed acidity(tartaric acid - g / dm^3): most acids involved with wine or fixed or nonvolatile (do not evaporate readily)
+
+   (2) volatile acidity(acetic acid - g / dm^3): the amount of acetic acid in wine, which at too high of levels can lead to an unpleasant, vinegar taste
+
+   (3) citric acid(g / dm^3): found in small quantities, citric acid can add 'freshness' and flavor to wines
+
+   (4) residual sugar(g / dm^3): the amount of sugar remaining after fermentation stops, it's rare to find wines with less than 1 gram/liter and wines with greater than 45 grams/liter are considered sweet
+
+   (5) chlorides(sodium chloride - g / dm^3): the amount of salt in the wine
+
+   (6) free sulfur dioxide (mg / dm^3): the free form of SO2 exists in equilibrium between molecular SO2 (as a dissolved gas) and bisulfite ion; it prevents microbial growth and the oxidation of wine
+
+   (7) total sulfur dioxide(mg / dm^3): amount of free and bound forms of S02; in low concentrations, SO2 is mostly undetectable in wine, but at free SO2 concentrations over 50 ppm, SO2 becomes evident in the nose and taste of wine
+
+   (8) density(g / cm^3): the density of water is close to that of water depending on the percent alcohol and sugar content
+
+   (9) pH: describes how acidic or basic a wine is on a scale from 0 (very acidic) to 14 (very basic); most wines are between 3-4 on the pH scale
+
+   (10) sulphates(potassium sulphate - g / dm3): a wine additive which can contribute to sulfur dioxide gas (S02) levels, wich acts as an antimicrobial and antioxidant
+
+   (11) alcohol (% by volume): the percent alcohol content of the wine
+
+- Output variable (based on sensory data): 
+
+   (12) quality (score between 0 and 10)
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# set work directory and load packages
+setwd("C:/Users/Xiaomin/Desktop/study/udacity/data analyst nanodegree/Project_4")
+
+library(corrplot)
+library(plotrix)
+library(acepack)
+library(caret)
+library(randomForest)
+library(e1071)
+library(pROC)
+library(Boruta)
+library(rpart)
+library(MASS)
+library(ggplot2)
+library(varSelRF)
+
+# load data
+white <- read.table("wineQualityWhites.csv",
+                    sep=",",
+                    header=TRUE)
+str(white)
+```
+
+We can see that the datasets loaded from the file contain the row index. The next step is to do some simple data cleaning including removing the row index, categorical variable transformation and standarize variables (if needed).
+
+```{r,echo=FALSE,meesage=FALSE,warning=FALSE}
+# remove the first column ( the row index ) from the dataset
+white <- white[,-1]
+```
+
+####2.2 Factorize The Outcome Variable "quality" 
+
+The type of the variable *quality* is now numeric. As we know from the description of the data set, the quality of the wine is shown as a list of score, but the difference between each score, for example, difference between score 3 and 4, could not be quantitativly interpreted as the score refers to a certian rank instead of a specific number. Hence it would be more reasonable to transform the outcome variable into a ordinal variable for future analysis
+
+
+```{r,echo=FALSE,message=FALSE,warning=FALSE}
+# create new categorical feature in the data set
+white$quality <- as.factor(white$quality)
+str(white)
+```
+
+####2.3 Check extreme values in predictors
+
+The simplest way to check extrem values is to compare the mean and median of the variable. If thes two differ from each a lot, then it is very possible that the variable carries outliers. Also, the range of the variable should be checked at the same time.
+
+```{r echo=FALSE,warning=FALSE,message=FALSE}
+predictors <- white[,1:11] #data set includes only predictors
+outcome <- white$quality #data set includes only outcome
+
+print(apply(predictors, 
+            2, summary)[3:4,])
+print(apply(predictors, 
+            2, summary)[c(1,6),])
+```
+
+From the table above, it seems no problem exist in the difference between mean and median for every variable. However, there are 4 variables we need to dig further becuase of their ranges: fixed.acidity, residual.sugar, free.sulfur.dioxide and total.sulfur.dioxide.
+
+We check the histograms and boxplots of these variables.
+
+```{r echo=FALSE,message=FALSE,warning=FALSE,cache=TRUE}
+# columns of the variables needed to check extrem values
+col.extreme.check <- c(1,4,6,7)
+
+#plot the histograme of these features
+for(i in col.extreme.check){
+graph.name = paste("Histogram of ",
+                   colnames(predictors)[i])
+nf <- layout(mat = matrix(c(1,2),2,1, byrow=TRUE),
+             height = c(1,3))
+par(mar=c(3.1, 3.1, 1.1, 2.1))
+boxplot(predictors[,i],
+        horizontal=TRUE,
+        outline=TRUE,
+        frame=F,
+        col="green1")
+hist(predictors[,i],
+     col = "pink",
+     xlab=colnames(predictors)[i],
+     ylab="frequency",main=graph.name)}
+```
+
+From the histograms above, we could see these variables contain some extreme values. In next step, we calcuate these outliers with IRQ.
+
+```{r echo=FALSE,message=FALSE,warning=FALSE,cache=TRUE}
+extreme.row <- 0 # a vector to store index of extreme values
+
+for(i in col.extreme.check){
+ lowerq = quantile(predictors[,i])[2]
+ upperq = quantile(predictors[,i])[4]
+ iqr = upperq - lowerq 
+
+ #Any data point outside (> e,upper or < elower) these values is an extreme outlier
+ e.upper = (iqr * 3) + upperq  
+ e.lower = lowerq - (iqr * 3)
+ 
+ #find the extreme values
+ extreme.index <- which(predictors[,i]>e.upper 
+                        | predictors[,i]<e.lower) 
+ extreme.values <- list(predictors[extreme.index,i])
+ 
+ #print out the names of the feature and the extreme values it contains
+ names(extreme.values) <- c(colnames(predictors)[i])
+ print(extreme.values)
+ 
+ #in case some extreme values in the same row
+ extreme.row <- unique(c(extreme.row,extreme.index))} 
+
+ extreme.row  <- extreme.row [-1] 
+# the first value is useless since it is only use to set up this vector
+```
+
+We could see according to IQR, these variables all had some extreme values. But we cannot just remove them as outliers as these values may be important criteria to score the wine. Let us see the relation between extrem values and quality of wine.
+
+```{r echo=FALSE}
+print(table(white[extreme.row,]$quality))
+```
+
+There are 14 extreme values in total and we could see wines scored to "low"(score less than 4) cover most of the extreme cases, which means we should keep these values in the dataset. It is very possible that they are not outliers or errors, but important criteria leading to low score to a wine.
+
+####2.4 Analyze the Outcome Variable 
+
+```{r,echo=FALSE,warning=FALSE,message=FALSE}
+barplot(table(outcome),
+xlab="quality",
+ylab="Count",
+main="Frequency of White Wine Quality Score",
+col="lightblue")
+```
+
+From the chart of quality, we know there are 7 levels in the quality measurement. Most wines are scored to the medium level, which ranged from 5 to 7. Very few wines get excellent score(score greater than 8) or evaluated as "bad"(score less than 4). 
+
+###3. Bivariate Analysis 
+
+This part is to check relationship between variables. The first part we check the how the predictors related and the second part we check how they related to the outcome variable.
+
+####3.1 Relation between Predictors
+
+First let us see the scatter plot to have some basic idea how they related.
+```{r echo=FALSE,warning=FALSE,message=FALSE}
+plot(white[,1:11])
+```
+
+We could see most predictors are not linearly correlated. Let us see their correlation plot to confirm this.
+
+```{r echo=FALSE,warning=FALSE,message=FALSE}
+# Create a correlation matrix.
+M <- cor(predictors)
+# Plot visual distributions on the lower diagonal, and numeric correlation values on the upper.
+corrplot(M, method = "ellipse", 
+         order="hclust", 
+         type="lower",
+         tl.cex=0.75, 
+         add = FALSE, 
+         tl.pos="lower",) #plot matrix
+corrplot(M, method = "number", 
+         order="hclust",
+         type="upper",
+         tl.cex=0.75,
+         add = TRUE, 
+         tl.pos="upper")#add the number
+```
+
+Linear relationship is not obvious among the predictors, except two pairs, *residual.sugar* and *density*, *density* and *alcohol*. The absolute values of correlation coeffitions for these two pairs are higher than 0.7, pretty high, which refer to strongly correlation.
+
+Now we use **Maximal Information Coefficient(MIC)** to check furthur. MIC could test not only linear, but non-linear relation between variables.
+
+```{r echo=FALSE,warning=FALSE,message=FALSE}
+mic.list <- 0 #build a list to store the MIC 
+
+# loop used to compute MIC 
+for(i in 1:11){
+j <- i+1
+while(j<12){
+argmax <- ace(predictors[,i], predictors[,j])
+mic <- cor(argmax$tx, argmax$ty) 
+mic.list <- c(mic.list,mic)
+j<-j+1}}
+mic.list <- mic.list[-1]
+
+#a matrix used to store MIC and the names of two variables for this MIC
+mic.m <- matrix(0,55,3)
+
+# the first column is the name of the first variable in MIC
+first.var <- c("fixed.acidity")
+for(i in 1:10){
+ first.var <- c(first.var,
+                rep(colnames(predictors)[i],11-i))}
+first.var <- first.var[-1]
+
+# the second column is the name of the second variable in MIC
+second.var <- rep(0,55)
+second.var[55] <- "alcohol"
+index.find <- data.frame(c(1:10),
+                         c(1,11,20,28,35,41,46,50,53,55))
+while(is.element(0,second.var)){
+ begin <- match(0,second.var)
+ col.begin <- match(begin,index.find[,2]) + 1
+ end <- index.find[match(col.begin,
+                         index.find[,1]),2]-1
+ second.var[begin:end] <- colnames(predictors)[col.begin:11] }
+
+mic.m <- data.frame(first.var,
+                    second.var,
+                    mic.list)
+colnames(mic.m) <- c("first variable",
+                     "second variable",
+                     "MIC")
+
+# show part of the MIC table
+print(head(mic.m[order(-mic.m$MIC),])) 
+
+#plot the table by adding index to the variables
+mic.m$x <- c(rep(1,10),rep(2,9),rep(3,8),rep(4,7),rep(5,6),
+             rep(6,5),rep(7,4),rep(8,3),rep(9,2),10)
+with(mic.m,
+     plot(x,MIC,
+          xlab="predictor",
+          xaxt="n",
+          main="MIC plot"))
+abline(h=0.6,col="red")
+text(4.1,0.85,
+     "(residual.sugar,density,0.88)",
+     col="blue")
+text(6.1,0.7,
+     "(free.sulfur.dioxide,total.sulfur.dioxide,0.61)",
+     col="blue")
+text(8.1,0.88,
+     "(density,alcohol,0.82)",
+     col="blue")
+```
+
+Now we could see, moderate relations exist among several pairs of predictors, **free.sulfur.dioxide** and **total.sulfur.dioxide**, **chlorides** and **alcohol** or **total.sulfur.dioxide** and **density**, etc.
+
+Let us see how these variables related for detail by their scatter plots.
+
+```{r echo=FALSE,warning=FALSE,message=FALSE}
+ggplot(white,aes(residual.sugar,density))+
+  geom_point(aes(color=quality))+
+  xlim(0,30)+
+  xlab("residual.sugar(g/dm^3)")+
+  ylab("density(g/cm^3)")+
+  ggtitle("Residual.sugar and Density by Quality")
+
+ggplot(white,aes(free.sulfur.dioxide,total.sulfur.dioxide))+
+  geom_point(aes(color=quality))+
+  xlim(0,150)+
+  xlab("free.sulfur.dioxide(mg/dm^3)")+
+  ylab("total.sulfur.dioxide(mg/dm^3)")+
+  ggtitle("Free.sulfur.dioxide and Total.sulfur.dioxide by Quality")
+
+ggplot(white,aes(density,alcohol))+
+  geom_point(aes(color=quality))+
+  xlim(0.98,1.01)+
+  xlab("density(g/cm^3)")+
+  ylab("alcohol(% by volume)")+
+  ggtitle("Density and Alcohol by Quality ")
+```
+
+The Scatter Plots above show that the first two are positively related and the last pair is negatively related. Let us confirm this by adding a linear regression fitting line into the graphs.
+
+```{r echo=FALSE,warning=FALSE,message=FALSE,cache=TRUE}
+ggplot(white,aes(residual.sugar,density))+
+  geom_point(aes(color=quality))+
+  xlim(0,30)+
+  xlab("residual.sugar(g/dm^3)")+
+  ylab("density(g/cm^3)")+
+  geom_smooth(model=lm)+
+  ggtitle("Residual.sugar and Density with LM Fitting")
+
+ggplot(white,aes(free.sulfur.dioxide,total.sulfur.dioxide))+
+  geom_point(aes(color=quality))+
+  xlim(0,150)+
+  xlab("free.sulfur.dioxide(mg/dm^3)")+
+  ylab("total.sulfur.dioxide(mg/dm^3)")+
+  geom_smooth(model=lm)+
+  ggtitle("Free.sulfur.dioxide and Total.sulfur.dioxide with LM Fitting")
+
+ggplot(white,aes(density,alcohol))+
+  geom_point(aes(color=quality))+
+  xlim(0.98,1.01)+
+  xlab("density(g/cm^3)")+
+  ylab("alcohol(% by volume)")+
+  geom_smooth(model=lm)+
+  ggtitle("Density and Alcohol with LM Fitting")
+```
+
+The first two plots confims our hypothesis in the positive linear relationship within the first two paris.
+The final plot gives great information that **density** and **alcohol** are linearly negatively related when **density** smaller than 1,after that, they positively related, but this only applies to very few cases. Their relationship is like a quadratic relationship.
+
+####3.2 Relation between Predictors and Outcome
+
+First use Spearman Ratio Correlation Test.
+
+```{r echo=FALSE,warning=FALSE,message=FALSE,cache=TRUE}
+spearman.ratio <- data.frame(colnames(predictors),
+                             rep(0,11))
+colnames(spearman.ratio) <- c("predictor",
+                              "spearman correlation")
+
+# compute p value of spearman ratio test
+for(i in 1:11)
+{ spearman.test <- cor.test(predictors[,i],
+                            as.numeric(outcome),
+                            method="spearman")
+  spearman.ratio[i,2] <- round(spearman.test$p.value,5)}
+
+print(spearman.ratio)
+```
+
+The p value of the test shows that except **citric.acid** and **sulphates**, other variables are statistically significantly related to the outcome.
+
+Next use Kruskal-Wallis test to see if the same result would appear.
+
+```{r echo=FALSE,warning=FALSE,message=FALSE,cache=TRUE}
+kruskal.wallis <- data.frame(colnames(predictors),
+                             rep(0,11))
+colnames(kruskal.wallis) <-c("predictor",
+                             "kruskal.wallis")
+
+# compute p.value for kruskal.wallis test
+for(i in 1:11)
+{ kruskal.walli.test <- kruskal.test(white[,i]~white$quality)
+  kruskal.wallis[i,2] <- round(kruskal.walli.test$p.value,5)}
+
+print(kruskal.wallis)
+```
+
+We get the same result from these two test! In the futhur analysis, we will check how these feactures effect the quality of a wine and order of their importance.
+
+###4.Multivariate Analysis
+
+In this part, I used 3 different algorithms to test the importances of the predictors, sort them by the order and record the order as a *rank score* every time. Finally, each feature would have 4 rank score and sum their score to get a final score as the final importance order of the feature. The lower the score, the more effects it has on the outcome.
+
+####4.1 Learning vector quantization(LVQ)
+
+The first model is LVQ, a prototype-based supervised classification algorithm.
+```{r warning=FALSE,message=FALSE,echo=FALSE,cache=TRUE}
+# the talbe used to record rank order of the featuer in every algorithm
+rank.table <- data.frame(colnames(predictors)) 
+# lvq model
+m.lvq <- train(quality~.,data=white,
+               method="lvq",
+               preProcess="scale") 
+# get importance order in lvq model
+importance.lvq <- varImp(m.lvq, scale=FALSE) 
+print(importance.lvq)
+#sort the importance order 
+print(sort(apply(data.frame(importance.lvq[1]),1,sum),
+           decreasing=TRUE)) 
+# record the order into the rank table
+rank.table$lvq <- c(9,7,8,10,1,6,5,3,4,11,2) 
+```
+
+The first importance table gives the order of the importance of each feature in every level quality. The second one sums the importance acorss all levels of quality for each feature to see the importance order of each feature without classifying the level of quality. The result given by **LVQ** shows that **chlorides**,**alcohol** and **density** are top 3 imporant feature in scoring a white wine, **sulphates** is the least important one, which matches the result given by two testings we did in the previous part.
+
+LVQ also visualizes the importances level of each feature in differenct wine quality level, plot is shown below.
+
+```{r warning=FALSE,message=FALSE,echo=FALSE}
+plot(importance.lvq,
+     main="Importance Order of Predictors in Different Level of Quality by LVQ")
+```
+
+The top 2 features are much more important in every level of quality than others obviously in the plot.
+
+####4.2 Boruta
+
+The second model is Boruta. Below is a paragrpha of short introduction to this algorithm from Wikipedia.
+
+*Boruta is an algorithm in the field of machine-learning, and more specifically, a feature-selection algorithm. The aim of the algorithm as presented in the original paper describing it is to find all relevant features (compare with minimal-optimal features set). The Boruta algorithm is not a stand-alone algorithm, but is implemented as a wrapper algorithm around the random-forest classification algorithm.*
+
+```{r echo=FALSE,message=FALSE,warning=FALSE,cache=TRUE}
+#boruta model
+m.boruta <- Boruta(quality~.,data=white,doTrace=2)
+#sort the importance order
+print(sort(apply(m.boruta$ImpHistory[,1:11],2,sum),
+     decreasing=TRUE)) 
+#record the order into rank table
+rank.table$boruta <- c(10,2,8,6,5,3,9,4,7,11,1) 
+```
+
+The result given by **Boruta** is **volatile.acidity**,**alcohol** and **free.sulfur.dioxide** are top 3 imporant feature in scoring a white wine, **sulphates** is still the least important one, which matches the result given by two testings we did in the previous part. **density** ranks No.4. The dramatic difference between the importance order given by these two algorithms appears among **volatile.acidity** and **chlorides**. 
+
+Boruta visulize the result of importance order in the form of boxplot,which is shown below.
+
+```{r echo=FALSE,message=FALSE,warning=FALSE}
+plot(m.boruta,
+     main="Importance Order of Predictors in Quality by Boruta")
+```
+
+**Alcohol** and **Volatile.acidity** are more important than others a lot in the scoring of white wine quality, as chosen by Boruta. **Free.sulfur.dioxide** outshines **density** slightly, following the top 2.
+
+####4.3 Random Forest
+
+The third model is Random Forest. 
+
+```{r echo=FALSE,warning=FALSE,message=FALSE,cache=TRUE,comment=FALSE,results='hide'}
+#random forest model
+rf <- randomForest(predictors,outcome,
+                   ntree = 200,importance = TRUE) 
+rf.rvi <- randomVarImpsRF(predictors,outcome,rf,
+                          numrandom = 20,usingCluster = FALSE)
+```
+
+```{r echo=FALSE,warning=FALSE,message=FALSE,comment=FALSE}
+#sort the importance order
+rf.order <- sort(apply(as.data.frame(rf.rvi[1]),1,sum),
+     decreasing=TRUE)
+print(names(rf.order))
+#record the order into rank table
+rank.table$rf <- c(6,11,9,2,5,7,4,1,8,10,3)
+```
+
+The result given by **Random Forest** is **alcohol**,**density** and **residual.sugar** are top 3 imporant feature in scoring a white wine, **sulphates** and **volatile.acidity** are the least important ones.
+
+Random Forest provides the plot showing importance level and number of variables.
+
+```{r echo=FALSE,warning=FALSE,message=FALSE,comment=FALSE}
+randomVarImpsRFplot(rf.rvi, rf,
+                    main="Variable Importances by Random Forest") 
+```
+
+We can see importance decreased dramatically in the fourth variable, which means the top 3 ones are far more important than others.
+
+####4.4 Final rank table
+
+Now we sum the rank score given by the 3 algorithms and see the final result.
+
+```{r echo=FALSE,message=FALSE,warning=FALSE,cache=TRUE}
+#get the sum of the rank 
+rank.table$final.rank.score <- apply(rank.table[,2:4],1,sum)
+print(rank.table)
+#order the rank table by the sum
+print(rank.table[order(rank.table$final.rank.score),1]) 
+```
+
+From the rank table, we could see **alcohol** and **density** are far more important than others in the effect on **quality**, followed by **chlorides**, **free.sulfur.dioxide** and **volatile.acidity**. These are top 5 features effect the quality of white wine.
+
+In terms of the least important one, the last 3 are **sulphates**, **citric.acid** and **fixed.acidity**. The first two are not suprising as we already get this from the Spearman Test and  Kruskal-Wallis test. 
+
+Let us visualize the order of importance of each feature.
+```{r echo=FALSE,message=FALSE,warning=FALSE}
+rank2 <- data.frame(rep(rank.table[,1],3))
+# give index to 3 algorithm2: lvq is 1, boruta is 2, rf is 3
+rank2$method <- c(rep(1,11),
+                  rep(2,11),
+                  rep(3,11))
+# get the rank order from 3 algorithms recorded in rank table
+rank2$rank <- c(rank.table[,2],
+                rank.table[,3],
+                rank.table[,4])
+
+colnames(rank2) <- c("predictor",
+                     "method",
+                     "rank")
+
+ggplot(rank2,aes(x =method, y=rank,col=predictor))+
+  geom_point()+
+  geom_line()+
+  scale_x_discrete(labels=c("lvq","boruta","random forest"))+
+  ggtitle("Importance Order of Predictors in 3 Algorithms")
+```
+
+The most stable one is **alcohol**,followed by **density**, which means these two are most important in the scoring of quality of white wine,which could be confirmed in all 3 algorithms.**Chlorides** is good in the **lvq**, but less important as selected by the last two algorithm. Even though, it still more important than the left.
+
+In the end of this part, we would like to see how thers 3 top features related to **quality** in visualization.
+
+```{r echo=FALSE,warning=FALSE,message=FALSE}
+print(ggplot(white,aes(quality,white[,11]))
+      +geom_boxplot()
+      +ylab("alcohol( % by volume)")
+      +ggtitle("boxplot of alcohol by quality"))
+
+print(ggplot(white,aes(quality,white[,8]))
+      +geom_boxplot()
+      +ylab("density(g/cm^3)")
+      +ggtitle("boxplot of density by quality"))
+
+print(ggplot(white,aes(quality,white[,5]))
+      +geom_boxplot()
+      +ylab("chlorides(g/dm^3)")
+      +ggtitle("boxplot of chlorides by quality"))
+```
+
+**Alcohol** is extremely high in white wine with good quality and is lowest in the medium level wine. In contrast, **density** and **chlorides** are low in good quality wine.
+
+###5.Final Plot
+
+####5.1 Plot 1
+
+```{r echo=FALSE,warning=FALSE,message=FALSE,comment=FALSE}
+ggplot(white,aes(density,alcohol))+
+  geom_point(aes(color=quality))+
+  xlim(0.98,1.01)+
+  xlab("density(g/cm^3)")+
+  ylab("alcohol(% by volume)")+
+  geom_smooth(model=lm)+
+  ggtitle("Density and Alcohol with LM Fitting")
+```
+
+- Description 1: In white wine, **alcohol** and **density** are quadratic related. **Alcohol** decreases with the growth of **density** until **density** reaches to 1.01 g/cm^3. After that, **alcohol** increases with **density**. This is interpretable because **alcohol** is extremely high in both bad white wine and good white wine, while **density** in good white wine is respetively lower than in other levels. In most cases, these two featues are negatively correlated.
+
+####5.2 Plot 2
+
+```{r echo=FALSE,warning=FALSE,message=FALSE,comment=FALSE}
+plot(importance.lvq)
+```
+
+- Description 2: This is the importance table of features to every level of quality given by **lvq**. We can see the importance of the top 3 features **chlorides**,**density** and **alcohol** significantly outshine others in scoring wines with low score and high score. For those socred to medium, whose quality score ranged from 5 to 7, despite the low effects of the last two features **sulphate** and **residual.sugar**, other features did not differe from each other a lot. 
+
+####5.3 Plot 3
+
+```{r echo=FALSE,warning=FALSE,message=FALSE}
+print(ggplot(white,aes(quality,white[,11]))
+      +geom_boxplot()
+      +ylab("alcohol( % by volume)")
+      +ggtitle("boxplot of alcohol by quality"))
+```
+
+- Description 3: This plot shows distribution of **alcohol** by different rank of quality. It is very obvious that **alcohol** is quite high in the white wine with high quality score and is lowest in the medium ones. This is reasonable as like global famous white wine **Chardonnay**, the average alchohol is greater than 13%, almost the maximum of the alcohol in our data set.In addition, **alcohol** and **density** are also higher in white wines with lower score, which makes sense because bad white wines may contain Methanol.
+
+###6.Reflection
+
+This EDA report is done with a dataset containing 4898 observations of 12 variables, 11 of them ar predicitors, which are elements as criteria to scoring the quality of a white wine and the outcome variable is the socre of a certian white wine, which is an ordinal variable.
+
+From the analysis above, we get to the conclusion that **alcohol**,**density** and **chlorides** are the most important features in scoring the quality of a white wine, while **sulphate** and **citric.acid** are least important criteria in the scoring.
+
+Alochol in White wine with high score are higher than wines in other level, but white wines in low level are also higher in alcohol than those in medium level, which may caused by Methanol. 
+
+Most of white wine would be scored as "medium", which means their score ranged from 5 to 7 and  few would be scored as "bad", but "excellent" is rarer than "bad".
+
+While doing this report, the first challenge I met is the extreme values found in the predictors. At first I simply took them as outliers and remove from the data set, but after that, I fould the number of bad wine,whose quality score lower then 4, decreases a lot. Therefore, I realize they may be important criteria to define a bad wine and check their distribution with quality and confirm my hypothesis. So it is more reasonable to keep them in the data set.
+The second challenge is the importance order given by 3 algorithms are not exactly the same, which makes the result difficult to intepret. After spending a lot of time studying how these 3 algorithms work in feature selection,instead of picking one of them, I produce a rank table to record all information from these 3 models and combine they result as the final conclusion.
+
+The rank table could be improved furthur as we can see from the rank plot, the order of some features varied a lot in 3 algorithms. So maybe in furthur improvement, we could add weights to these 3 models to lower the variances of the orders.
